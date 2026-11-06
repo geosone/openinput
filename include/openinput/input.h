@@ -43,13 +43,19 @@
 #define OI_KEY_RIGHT_GUI  0xE7u
 
 /* One event. Keys and buttons: value 1 pressed, 0 released. Axes: relative
- * movement (X right, Y down, wheel away from the user positive). */
+ * movement (X right, Y down, wheel away from the user positive), or with
+ * OI_EV_ABSOLUTE a position from 0 to OI_ABS_MAX (tablets, the pointer of
+ * a virtual machine). */
 struct oi_event {
     oa_u16 page;
     oa_u16 usage;
     oa_s32 value;
     oa_u8 source;  /* index of the source, oi_source_name() */
+    oa_u8 flags;   /* OI_EV_* */
 };
+
+#define OI_EV_ABSOLUTE 0x01u
+#define OI_ABS_MAX     32767
 
 /* Keyboard LEDs, as the bits of the HID LED report. */
 #define OI_LED_NUM    0x01u
@@ -61,6 +67,18 @@ struct oi_event {
  * enumerated. Each returns the number of sources it added. */
 int oi_ps2_init(void);
 int oi_usb_attach(void);
+/* A virtio input device (keyboard, mouse, tablet: PCI 1AF4h:1052h) at PCI
+ * address `pci`; 1 when it was added. */
+int oi_virtio_add(oa_u32 pci);
+#define OI_VIRTIO_VENDOR 0x1AF4u
+#define OI_VIRTIO_INPUT  0x1052u
+/* A serial mouse on the 16550 UART at I/O port `port` (COM2: 2F8h):
+ * Microsoft, Logitech (3 buttons) and IntelliMouse (wheel) are recognised
+ * by their ID; OI_SERIAL_MOUSE_SYSTEMS forces the Mouse Systems protocol,
+ * which has none. 1 when a mouse was found. */
+#define OI_SERIAL_AUTO          0
+#define OI_SERIAL_MOUSE_SYSTEMS 1
+int oi_serial_mouse_init(oa_u16 port, int protocol);
 
 /* Poll every source; then take the queued events one by one (1, or 0 when
  * the queue is empty). */
@@ -78,6 +96,8 @@ const char *oi_source_name(unsigned source);
  * with bit 8 set when it needs E0h, 0 when there is none. */
 oa_u16 oi_set1_to_usage(oa_u8 code, int e0);
 oa_u16 oi_usage_to_set1(oa_u16 usage);
+/* Linux input event key code (virtio-input) to keyboard usage (0: none). */
+oa_u16 oi_evdev_to_usage(oa_u16 code);
 
 /* --- for the source drivers ---------------------------------------- */
 
@@ -91,7 +111,8 @@ struct oi_source {
 
 /* Register a source (0, or -1 when the table is full). */
 int oi_register(struct oi_source *src, const char *name);
-/* Queue an event from `src`. */
+/* Queue an event from `src`; oi_emit_abs for an absolute position. */
 void oi_emit(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value);
+void oi_emit_abs(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value);
 
 #endif

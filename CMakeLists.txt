@@ -40,7 +40,7 @@ if(NOT TARGET EUSBCORE::core)
   add_subdirectory("${EUSBCORE_SOURCE_DIR}" eusbcore EXCLUDE_FROM_ALL)
 endif()
 
-add_library(openinput STATIC src/event.c src/tables.c src/usbhid.c src/ps2.c)
+add_library(openinput STATIC src/event.c src/tables.c src/usbhid.c src/ps2.c src/virtio.c src/sermouse.c src/hidparse.c)
 target_include_directories(openinput PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(openinput PUBLIC EUSBCORE::core OpenASPI::host)
 set_target_properties(openinput PROPERTIES C_STANDARD 90 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

@@ -22,7 +22,7 @@ int oi_register(struct oi_source *src, const char *name)
     return 0;
 }
 
-void oi_emit(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value)
+static void emit(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value, oa_u8 flags)
 {
     struct oi_event *e;
 
@@ -34,7 +34,18 @@ void oi_emit(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value)
     e->usage = usage;
     e->value = value;
     e->source = src->index;
+    e->flags = flags;
     tail = (tail + 1u) % QUEUE;
+}
+
+void oi_emit(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value)
+{
+    emit(src, page, usage, value, 0);
+}
+
+void oi_emit_abs(struct oi_source *src, oa_u16 page, oa_u16 usage, oa_s32 value)
+{
+    emit(src, page, usage, value, OI_EV_ABSOLUTE);
 }
 
 void oi_poll(void)

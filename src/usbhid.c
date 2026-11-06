@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* openinput: USB keyboards and mice in the boot protocol (HID class,
- * subclass 1), on eusbcore's interrupt pipes. */
+/* openinput: USB HID devices on eusbcore's interrupt pipes. The report
+ * protocol with the device's report descriptor (hidparse.c) when it
+ * describes keys, buttons or axes we know - tablets, media keys, more than
+ * three buttons; otherwise keyboards and mice in the boot protocol. */
 
 #include <string.h>
 
 #include "eusbcore/usb.h"
+#include "hidparse.h"
 #include "openinput/input.h"
 
 #define MAX_HID 8
@@ -13,14 +16,19 @@
 #define HID_SET_PROTOCOL 0x0Bu
 #define HID_SET_REPORT   0x09u
 #define REQ_CLASS_IFACE_OUT 0x21u
+#define REQ_STD_IFACE_IN    0x81u
+#define GET_DESCRIPTOR      0x06u
 
 struct hid {
     struct oi_source src;
     struct usb_intr pipe;
     oa_u8 iface;
     int keyboard;
+    int report;              /* report protocol through `desc` */
     oa_u8 last[8];
     oa_u8 buttons;
+    struct hid_desc desc;
+    char name[24];
 };
 
 static struct hid hids[MAX_HID];
@@ -110,7 +118,9 @@ static void hid_poll(struct oi_source *src)
         if (usb_intr_poll(&h->pipe, r, &n) != 1) {
             return;
         }
-        if (h->keyboard) {
+        if (h->report) {
+            hid_report(&h->desc, &h->src, r, n);
+        } else if (h->keyboard) {
             keyboard_report(h, r, n);
         } else {
             mouse_report(h, r, n);
@@ -121,29 +131,58 @@ static void hid_poll(struct oi_source *src)
 static void hid_leds(struct oi_source *src, unsigned leds)
 {
     struct hid *h = src->priv;
-    oa_u8 v = (oa_u8)(leds & 7u);
-    oa_u16 got;
+    oa_u8 v[2];
+    oa_u16 got, id = h->report ? h->desc.led_report_id : 0u;
 
-    usb_control(h->pipe.dev, REQ_CLASS_IFACE_OUT, HID_SET_REPORT, 0x0200u, h->iface, &v, 1, &got);
+    v[0] = (oa_u8)id;
+    v[1] = (oa_u8)(leds & 7u);
+    usb_control(h->pipe.dev, REQ_CLASS_IFACE_OUT, HID_SET_REPORT, (oa_u16)(0x0200u | id), h->iface,
+                id ? v : v + 1, id ? 2u : 1u, &got);
 }
 
-static void attach(struct usb_dev *d, oa_u8 iface, oa_u8 protocol, oa_u8 ep)
+static void set_name(struct hid *h, const char *s)
+{
+    unsigned i;
+
+    for (i = 0; s[i] && i < sizeof(h->name) - 1u; i++) {
+        h->name[i] = s[i];
+    }
+    h->name[i] = 0;
+}
+
+/* Interface `iface` of `d` (HID class, boot `protocol` or 0) with its
+ * interrupt IN endpoint; `rdlen`: report descriptor length (0: unknown). */
+static void attach(struct usb_dev *d, oa_u8 iface, oa_u8 protocol, oa_u8 ep, oa_u16 rdlen)
 {
     struct hid *h = &hids[nhids];
-    oa_u16 got;
+    static oa_u8 rd[1024];
+    oa_u16 got = 0, len = 8;
 
     memset(h, 0, sizeof(*h));
     h->iface = iface;
     h->keyboard = protocol == 1u;
-    usb_control(d, REQ_CLASS_IFACE_OUT, HID_SET_PROTOCOL, 0, iface, 0, 0, &got); /* boot */
-    usb_control(d, REQ_CLASS_IFACE_OUT, HID_SET_IDLE, 0, iface, 0, 0, &got);     /* on change */
-    if (usb_intr_open(&h->pipe, d, ep, 8) < 0) {
+    if (rdlen && rdlen <= sizeof(rd) &&
+        usb_control(d, REQ_STD_IFACE_IN, GET_DESCRIPTOR, 0x2200u, iface, rd, rdlen, &got) == USB_OK &&
+        hid_parse(&h->desc, rd, got) == 0 && h->desc.max_report <= 64u) {
+        h->report = 1;
+        h->keyboard = h->desc.keys;
+        len = h->desc.max_report;
+        usb_control(d, REQ_CLASS_IFACE_OUT, HID_SET_PROTOCOL, 1, iface, 0, 0, &got); /* report */
+    } else if (protocol == 1u || protocol == 2u) {
+        usb_control(d, REQ_CLASS_IFACE_OUT, HID_SET_PROTOCOL, 0, iface, 0, 0, &got); /* boot */
+    } else {
+        return; /* nothing we understand */
+    }
+    usb_control(d, REQ_CLASS_IFACE_OUT, HID_SET_IDLE, 0, iface, 0, 0, &got); /* on change */
+    if (usb_intr_open(&h->pipe, d, ep, len) < 0) {
         return;
     }
+    set_name(h, h->report && h->desc.absolute ? "USB tablet" :
+                h->keyboard ? "USB keyboard" : "USB mouse");
     h->src.poll = hid_poll;
-    h->src.set_leds = h->keyboard ? hid_leds : 0;
+    h->src.set_leds = h->keyboard && (!h->report || h->desc.has_leds) ? hid_leds : 0;
     h->src.priv = h;
-    if (oi_register(&h->src, h->keyboard ? "USB keyboard" : "USB mouse") == 0) {
+    if (oi_register(&h->src, h->name) == 0) {
         nhids++;
     }
 }
@@ -156,18 +195,22 @@ int oi_usb_attach(void)
         struct usb_dev *d = usb_device(i);
         const oa_u8 *c = d->config_desc;
         oa_u16 pos = 0, len = d->config_len;
-        int boot = 0;
+        int hid = 0;
         oa_u8 iface = 0, protocol = 0;
+        oa_u16 rdlen = 0;
 
         while (pos + 2u <= len && c[pos] >= 2u && pos + c[pos] <= len && nhids < MAX_HID) {
             const oa_u8 *x = c + pos;
             if (x[1] == 4u && x[0] >= 9u) { /* interface */
-                boot = x[5] == 3u && x[6] == 1u && (x[7] == 1u || x[7] == 2u);
+                hid = x[5] == 3u;
                 iface = x[2];
-                protocol = x[7];
-            } else if (x[1] == 5u && x[0] >= 7u && boot && (x[2] & 0x80u) && (x[3] & 3u) == 3u) {
-                attach(d, iface, protocol, x[2]);
-                boot = 0; /* one pipe per interface */
+                protocol = x[6] == 1u ? x[7] : 0u; /* boot interface subclass */
+                rdlen = 0;
+            } else if (x[1] == 0x21u && x[0] >= 9u && hid) { /* HID descriptor */
+                rdlen = (oa_u16)(x[7] | (x[8] << 8));
+            } else if (x[1] == 5u && x[0] >= 7u && hid && (x[2] & 0x80u) && (x[3] & 3u) == 3u) {
+                attach(d, iface, protocol, x[2], rdlen);
+                hid = 0; /* one pipe per interface */
             }
             pos = (oa_u16)(pos + c[pos]);
         }

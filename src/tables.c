@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Scancode set 1 <-> HID keyboard usages, after Microsoft's Keyboard Scan
  * Code Specification (the set 1 column; an 8042 in translation mode turns
- * the keyboard's set 2 into it). */
+ * the keyboard's set 2 into it), and Linux input key codes (virtio-input),
+ * which are set 1 codes up to 88 (F12). */
 
 #include "openinput/input.h"
 
@@ -84,6 +85,58 @@ oa_u16 oi_usage_to_set1(oa_u16 usage)
     for (i = 0; i < 128u; i++) {
         if (set1[i] == usage) {
             return (oa_u16)i;
+        }
+    }
+    return 0;
+}
+
+/* Linux key codes above 88 */
+static const oa_u16 evdev[][2] = {
+    { 89, 0x87 },  /* KEY_RO */
+    { 92, 0x8A },  /* KEY_HENKAN */
+    { 93, 0x88 },  /* KEY_KATAKANAHIRAGANA */
+    { 94, 0x8B },  /* KEY_MUHENKAN */
+    { 96, 0x58 },  /* KEY_KPENTER */
+    { 97, 0xE4 },  /* KEY_RIGHTCTRL */
+    { 98, 0x54 },  /* KEY_KPSLASH */
+    { 99, 0x46 },  /* KEY_SYSRQ: Print Screen */
+    { 100, 0xE6 }, /* KEY_RIGHTALT */
+    { 102, 0x4A }, /* KEY_HOME */
+    { 103, 0x52 }, /* KEY_UP */
+    { 104, 0x4B }, /* KEY_PAGEUP */
+    { 105, 0x50 }, /* KEY_LEFT */
+    { 106, 0x4F }, /* KEY_RIGHT */
+    { 107, 0x4D }, /* KEY_END */
+    { 108, 0x51 }, /* KEY_DOWN */
+    { 109, 0x4E }, /* KEY_PAGEDOWN */
+    { 110, 0x49 }, /* KEY_INSERT */
+    { 111, 0x4C }, /* KEY_DELETE */
+    { 113, 0x7F }, /* KEY_MUTE */
+    { 114, 0x81 }, /* KEY_VOLUMEDOWN */
+    { 115, 0x80 }, /* KEY_VOLUMEUP */
+    { 116, 0x66 }, /* KEY_POWER */
+    { 117, 0x67 }, /* KEY_KPEQUAL */
+    { 119, 0x48 }, /* KEY_PAUSE */
+    { 121, 0x85 }, /* KEY_KPCOMMA */
+    { 124, 0x89 }, /* KEY_YEN */
+    { 125, 0xE3 }, /* KEY_LEFTMETA */
+    { 126, 0xE7 }, /* KEY_RIGHTMETA */
+    { 127, 0x65 }, /* KEY_COMPOSE: Application */
+};
+
+oa_u16 oi_evdev_to_usage(oa_u16 code)
+{
+    unsigned i;
+
+    if (code >= 183u && code <= 194u) {
+        return (oa_u16)(0x68u + (code - 183u)); /* F13-F24 */
+    }
+    if (code <= 88u) {
+        return set1[code];
+    }
+    for (i = 0; i < sizeof(evdev) / sizeof(evdev[0]); i++) {
+        if (evdev[i][0] == code) {
+            return evdev[i][1];
         }
     }
     return 0;
